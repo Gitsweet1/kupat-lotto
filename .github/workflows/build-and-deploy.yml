@@ -7,6 +7,10 @@ on:
       - 'server/**'
       - '.github/workflows/build-and-deploy.yml'
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: kupat-lotto
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -19,15 +23,22 @@ jobs:
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest
+
       - name: Build and push image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@v6
         with:
           context: ./server
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/kupat-lotto:latest
-            ghcr.io/${{ github.repository_owner }}/kupat-lotto:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
