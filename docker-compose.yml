@@ -1,0 +1,13 @@
+services:
+  kupat-lotto:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/kupat-lotto:latest
+    container_name: kupat-lotto
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - ADMIN_PASSWORD=change-me-please
+      - DATA_DIR=/app/data
+    volumes:
+      # מפה לתיקייה קבועה בנאס - זה מה ששומר את הנתונים בין עדכוני קונטיינר
+      - /volume1/docker/kupat-lotto/data:/app/data

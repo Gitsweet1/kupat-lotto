@@ -1,0 +1,39 @@
+name: Build and Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.github/workflows/build-and-deploy.yml'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./server
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/kupat-lotto:latest
+            ghcr.io/${{ github.repository_owner }}/kupat-lotto:${{ github.sha }}
+
+      # אופציונלי: אם מגדירים Webhook ב-Portainer לעדכון מיידי של ה-stack.
+      # יוצרים secret בשם PORTAINER_WEBHOOK_URL עם הכתובת מ-Portainer.
+      - name: Trigger Portainer redeploy
+        if: ${{ secrets.PORTAINER_WEBHOOK_URL != '' }}
+        run: curl -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}"

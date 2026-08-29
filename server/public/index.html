@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>קופת לוטו משפחתית</title>
+<style>
+  :root{
+    --bg:#0f1f17; --panel:#16281f; --panel2:#1c3226;
+    --gold:#e8b64c; --gold-soft:#f2cf7c; --green:#3fae6a; --red:#e0654f;
+    --ink:#eef2ea; --ink-dim:#9db3a6; --line:#2a4536; --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:"Heebo","Segoe UI",Arial,sans-serif;padding:20px;}
+  .wrap{max-width:720px;margin:0 auto;}
+  h1{font-size:26px;margin:0 0 4px;}
+  .sub{color:var(--ink-dim);font-size:13px;margin-bottom:20px;}
+  .top-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
+  .badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);}
+  .badge.admin{color:var(--gold-soft);border-color:var(--gold);}
+  .badge.viewer{color:var(--ink-dim);}
+  .kupa{background:linear-gradient(135deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--radius);padding:22px;text-align:center;margin-bottom:20px;}
+  .kupa-label{color:var(--ink-dim);font-size:13px;margin-bottom:6px;}
+  .kupa-amount{font-size:44px;font-weight:800;color:var(--gold-soft);}
+  .kupa-note{font-size:12px;color:var(--ink-dim);margin-top:6px;}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:16px;margin-bottom:16px;}
+  .card h2{font-size:15px;margin:0 0 12px;color:var(--gold-soft);}
+  .members-list{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;}
+  .member-chip{background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:13px;display:flex;align-items:center;gap:8px;}
+  .member-chip.retired{opacity:0.5;text-decoration:line-through;}
+  .member-chip b{color:var(--gold-soft);font-weight:700;}
+  .member-chip .act{cursor:pointer;color:var(--ink-dim);font-size:12px;text-decoration:none;}
+  .member-chip .act:hover{color:var(--red);}
+  input, select{background:var(--panel2);border:1px solid var(--line);color:var(--ink);border-radius:8px;padding:9px 10px;font-size:14px;font-family:inherit;}
+  input::placeholder{color:var(--ink-dim);}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .row > *{flex:1;min-width:100px;}
+  button{background:var(--gold);color:#1a1206;border:none;border-radius:8px;padding:9px 14px;font-weight:700;font-size:14px;cursor:pointer;flex:0 0 auto;min-width:auto !important;}
+  button:hover{background:var(--gold-soft);}
+  button.secondary{background:var(--panel2);color:var(--ink);border:1px solid var(--line);}
+  button.secondary:hover{background:var(--line);}
+  button.danger{background:var(--red);color:#fff;}
+  button:disabled{opacity:0.4;cursor:not-allowed;}
+  table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px;}
+  th,td{padding:8px 6px;text-align:right;border-bottom:1px solid var(--line);}
+  th{color:var(--ink-dim);font-weight:600;font-size:12px;}
+  .win{color:var(--green);font-weight:700;}
+  .lose{color:var(--ink-dim);}
+  .empty{color:var(--ink-dim);font-size:13px;padding:8px 0;}
+  .locked-note{font-size:12px;color:var(--ink-dim);}
+  .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--gold);color:var(--ink);padding:10px 16px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .3s;pointer-events:none;z-index:50;}
+  .toast.show{opacity:1;}
+  .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);display:none;align-items:center;justify-content:center;z-index:100;}
+  .modal-bg.show{display:flex;}
+  .modal{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px;max-width:340px;width:90%;}
+  .modal h3{margin-top:0;font-size:16px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top-bar">
+    <div>
+      <h1>🎟️ קופת לוטו משפחתית</h1>
+      <div class="sub">כולם רואים, רק מנהל משנה</div>
+    </div>
+    <div id="authArea"></div>
+  </div>
+
+  <div class="kupa">
+    <div class="kupa-label">יתרה בקופה</div>
+    <div class="kupa-amount" id="kupaAmount">₪0</div>
+    <div class="kupa-note" id="kupaNote"></div>
+  </div>
+
+  <div class="card">
+    <h2>👨‍👩‍👧‍👦 בני משפחה</h2>
+    <div class="members-list" id="membersList"></div>
+    <div class="row admin-only" style="display:none;">
+      <input id="newMemberName" placeholder="שם חדש" />
+      <button onclick="addMember()">הוסף</button>
+    </div>
+  </div>
+
+  <div class="card admin-only" style="display:none;">
+    <h2>💰 הפקדה לקופה</h2>
+    <div class="row">
+      <select id="depMember"></select>
+      <input id="depAmount" type="number" placeholder="סכום ₪" />
+      <button onclick="addDeposit()">הפקד</button>
+    </div>
+  </div>
+
+  <div class="card admin-only" style="display:none;">
+    <h2>🎰 הגרלה חדשה</h2>
+    <div class="locked-note" style="margin-bottom:8px;">העלות והזכיה מתחלקות שווה בשווה בין החברים הפעילים כרגע, ונשמרות כך גם אם ההרכב ישתנה בעתיד.</div>
+    <div class="row">
+      <input id="drawDate" type="date" />
+      <input id="drawCost" type="number" placeholder="עלות טופס ₪" />
+      <input id="drawWin" type="number" placeholder="זכיה ₪ (0 אם לא זכינו)" />
+    </div>
+    <div class="row" style="margin-top:8px;">
+      <input id="drawNote" placeholder="הערה (אופציונלי)" style="flex:2;" />
+      <button onclick="addDraw()">רשום הגרלה</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>📜 היסטוריית הגרלות</h2>
+    <div id="drawsTableWrap"><div class="empty">אין עדיין הגרלות</div></div>
+  </div>
+
+  <div class="card">
+    <h2>💳 יתרה אישית לפי חבר</h2>
+    <div class="sub" style="margin-bottom:10px;">מה שכל אחד הפקיד, פחות חלקו בעלויות, ועוד חלקו בזכיות — זה גם מה שהוא מקבל בחלוקה סופית.</div>
+    <div id="ledgerTableWrap"><div class="empty">אין עדיין נתונים</div></div>
+  </div>
+
+  <div class="card admin-only" style="display:none;">
+    <h2>⚠️ אזור מנהל</h2>
+    <div class="row">
+      <button class="secondary" onclick="downloadBackup()">📥 הורד גיבוי JSON</button>
+      <button class="danger" onclick="openResetModal()">איפוס כללי</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="modal-bg" id="resetModal">
+  <div class="modal">
+    <h3>איפוס כללי</h3>
+    <p style="font-size:13px;color:var(--ink-dim);">פעולה זו מוחקת את כל החברים, ההפקדות וההגרלות. גיבוי אוטומטי יישמר בשרת לפני המחיקה. אין דרך לבטל דרך הממשק.</p>
+    <p style="font-size:13px;">כתבו <b>RESET</b> לאישור:</p>
+    <input id="resetConfirmInput" style="width:100%;margin-bottom:10px;" />
+    <div class="row">
+      <button class="secondary" onclick="closeResetModal()">ביטול</button>
+      <button class="danger" onclick="doReset()">אפס הכל</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let token = localStorage.getItem('lotto_admin_token') || null;
+let state = { members: [], contributions: [], draws: [], draw_shares: [], totals:{}, ledger:{} };
+
+function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
+
+async function api(path, opts={}){
+  opts.headers = opts.headers || {};
+  if (opts.body){ opts.headers['Content-Type']='application/json'; }
+  if (token){ opts.headers['Authorization']='Bearer '+token; }
+  const res = await fetch('/api'+path, opts);
+  if (res.status === 401){
+    localStorage.removeItem('lotto_admin_token'); token=null; renderAuth();
+    toast('פג תוקף ההתחברות, התחבר שוב');
+    throw new Error('unauthorized');
+  }
+  if (!res.ok){
+    const err = await res.json().catch(()=>({error:'שגיאה'}));
+    toast(err.error || 'שגיאה');
+    throw new Error(err.error || 'error');
+  }
+  return res.json();
+}
+
+async function loadState(){
+  state = await api('/state');
+  render();
+}
+
+function renderAuth(){
+  const area = document.getElementById('authArea');
+  const adminOnly = document.querySelectorAll('.admin-only');
+  if (token){
+    area.innerHTML = `<span class="badge admin">👑 מחובר כמנהל</span> <button class="secondary" onclick="logout()">התנתק</button>`;
+    adminOnly.forEach(el=>el.style.display='');
+  } else {
+    area.innerHTML = `<span class="badge viewer">👁️ צפייה בלבד</span> <button class="secondary" onclick="openLogin()">כניסת מנהל</button>`;
+    adminOnly.forEach(el=>el.style.display='none');
+  }
+}
+function openLogin(){
+  const pw = prompt('סיסמת מנהל:');
+  if (pw === null) return;
+  fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
+    .then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e)))
+    .then(d=>{ token=d.token; localStorage.setItem('lotto_admin_token', token); renderAuth(); toast('התחברת כמנהל'); })
+    .catch(()=>toast('סיסמה שגויה'));
+}
+function logout(){ token=null; localStorage.removeItem('lotto_admin_token'); renderAuth(); }
+
+async function addMember(){
+  const input = document.getElementById('newMemberName');
+  const name = input.value.trim();
+  if (!name) return;
+  await api('/members', {method:'POST', body: JSON.stringify({name})});
+  input.value=''; await loadState(); toast('נוסף');
+}
+async function toggleRetire(id, active){
+  await api('/members/'+id, {method:'PATCH', body: JSON.stringify({active})});
+  await loadState(); toast(active ? 'הוחזר לפעיל' : 'סומן כפרש');
+}
+async function addDeposit(){
+  const memberId = document.getElementById('depMember').value;
+  const amount = Number(document.getElementById('depAmount').value);
+  if (!memberId || !amount || amount<=0){ toast('בחר חבר וסכום תקין'); return; }
+  await api('/contributions', {method:'POST', body: JSON.stringify({memberId, amount})});
+  document.getElementById('depAmount').value=''; await loadState(); toast('ההפקדה נרשמה');
+}
+async function addDraw(){
+  const date = document.getElementById('drawDate').value || undefined;
+  const cost = Number(document.getElementById('drawCost').value)||0;
+  const win = Number(document.getElementById('drawWin').value)||0;
+  const note = document.getElementById('drawNote').value.trim();
+  if (cost<=0){ toast('הכנס עלות טופס'); return; }
+  await api('/draws', {method:'POST', body: JSON.stringify({date, cost, win, note})});
+  document.getElementById('drawCost').value=''; document.getElementById('drawWin').value=''; document.getElementById('drawNote').value='';
+  await loadState(); toast(win>0 ? 'מזל טוב! זכיה נרשמה 🎉' : 'ההגרלה נרשמה');
+}
+async function downloadBackup(){
+  const res = await fetch('/api/backup', {headers:{'Authorization':'Bearer '+token}});
+  if (!res.ok){ toast('שגיאה בגיבוי'); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='lotto-backup.json'; a.click();
+  URL.revokeObjectURL(url);
+}
+function openResetModal(){ document.getElementById('resetModal').classList.add('show'); }
+function closeResetModal(){ document.getElementById('resetModal').classList.remove('show'); document.getElementById('resetConfirmInput').value=''; }
+async function doReset(){
+  const val = document.getElementById('resetConfirmInput').value;
+  if (val !== 'RESET'){ toast('יש להקליד RESET בדיוק'); return; }
+  await api('/reset', {method:'POST', body: JSON.stringify({confirm:'RESET'})});
+  closeResetModal(); await loadState(); toast('הכל אופס, גיבוי נשמר בשרת');
+}
+
+function render(){
+  const t = state.totals || {};
+  document.getElementById('kupaAmount').textContent = '₪'+(t.kupa||0).toFixed(1);
+  document.getElementById('kupaNote').textContent =
+    `הפקדות: ₪${(t.deposits||0).toFixed(0)} · עלויות טפסים: ₪${(t.costs||0).toFixed(0)} · זכיות: ₪${(t.wins||0).toFixed(0)}`;
+
+  const ml = document.getElementById('membersList');
+  ml.innerHTML = state.members.length ? state.members.map(m=>{
+    const retired = !m.active;
+    const actionBtn = token
+      ? `<a class="act" onclick="toggleRetire('${m.id}', ${retired})">${retired?'החזר':'פרש'}</a>`
+      : '';
+    return `<span class="member-chip ${retired?'retired':''}"><b>${m.name}</b>${actionBtn}</span>`;
+  }).join('') : '<span class="empty">אין עדיין חברים</span>';
+
+  const sel = document.getElementById('depMember');
+  const active = state.members.filter(m=>m.active);
+  sel.innerHTML = active.map(m=>`<option value="${m.id}">${m.name}</option>`).join('') || '<option value="">אין חברים פעילים</option>';
+
+  const dw = document.getElementById('drawsTableWrap');
+  if (!state.draws.length){
+    dw.innerHTML = '<div class="empty">אין עדיין הגרלות</div>';
+  } else {
+    const rows = [...state.draws].sort((a,b)=>b.date.localeCompare(a.date)).map(d=>{
+      const won = d.win>0;
+      return `<tr><td>${d.date}</td><td>₪${d.cost.toFixed(0)}</td><td class="${won?'win':'lose'}">${won?'🏆 ₪'+d.win.toFixed(0):'לא זכינו'}</td><td>${d.note||''}</td></tr>`;
+    }).join('');
+    dw.innerHTML = `<table><tr><th>תאריך</th><th>עלות</th><th>תוצאה</th><th>הערה</th></tr>${rows}</table>`;
+  }
+
+  const lw = document.getElementById('ledgerTableWrap');
+  if (!state.members.length){
+    lw.innerHTML = '<div class="empty">אין עדיין נתונים</div>';
+  } else {
+    const rows = state.members.map(m=>{
+      const bal = (state.ledger && state.ledger[m.id]) || 0;
+      return `<tr><td>${m.name}${m.active?'':' <span class="locked-note">(פרש)</span>'}</td><td><b>₪${bal.toFixed(1)}</b></td></tr>`;
+    }).join('');
+    lw.innerHTML = `<table><tr><th>שם</th><th>יתרה אישית</th></tr>${rows}</table>`;
+  }
+}
+
+renderAuth();
+loadState();
+</script>
+</body>
+</html>

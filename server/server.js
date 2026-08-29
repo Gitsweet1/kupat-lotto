@@ -1,0 +1,230 @@
+const express = require('express');
+const Database = require('better-sqlite3');
+const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+const DATA_DIR = process.env.DATA_DIR || '/app/data';
+const DB_PATH = path.join(DATA_DIR, 'lotto.db');
+const BACKUP_DIR = path.join(DATA_DIR, 'backups');
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me';
+const PORT = process.env.PORT || 3000;
+
+fs.mkdirSync(DATA_DIR, { recursive: true });
+fs.mkdirSync(BACKUP_DIR, { recursive: true });
+
+const db = new Database(DB_PATH);
+db.pragma('journal_mode = WAL');
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS members (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS contributions (
+  id TEXT PRIMARY KEY,
+  member_id TEXT NOT NULL,
+  amount REAL NOT NULL,
+  date TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS draws (
+  id TEXT PRIMARY KEY,
+  date TEXT NOT NULL,
+  cost REAL NOT NULL,
+  win REAL NOT NULL DEFAULT 0,
+  note TEXT
+);
+CREATE TABLE IF NOT EXISTS draw_shares (
+  id TEXT PRIMARY KEY,
+  draw_id TEXT NOT NULL,
+  member_id TEXT NOT NULL,
+  cost_share REAL NOT NULL,
+  win_share REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS audit_log (
+  id TEXT PRIMARY KEY,
+  ts TEXT NOT NULL,
+  action TEXT NOT NULL,
+  details TEXT
+);
+`);
+
+// ---------- helpers ----------
+const uid = () => crypto.randomBytes(8).toString('hex');
+const now = () => new Date().toISOString();
+
+function logAction(action, details) {
+  db.prepare('INSERT INTO audit_log (id, ts, action, details) VALUES (?,?,?,?)')
+    .run(uid(), now(), action, JSON.stringify(details || {}));
+}
+
+// splits `total` (in shekels) equally among memberIds, rounded to agorot,
+// with remainder cents distributed deterministically so the sum matches exactly.
+function splitEqually(total, memberIds) {
+  const n = memberIds.length;
+  const shares = {};
+  if (n === 0) return shares;
+  const totalCents = Math.round(total * 100);
+  const base = Math.floor(totalCents / n);
+  let remainder = totalCents - base * n;
+  memberIds.forEach((id, i) => {
+    let cents = base;
+    if (remainder > 0) { cents += 1; remainder -= 1; }
+    shares[id] = cents / 100;
+  });
+  return shares;
+}
+
+function getState() {
+  const members = db.prepare('SELECT * FROM members ORDER BY created_at').all();
+  const contributions = db.prepare('SELECT * FROM contributions ORDER BY date').all();
+  const draws = db.prepare('SELECT * FROM draws ORDER BY date').all();
+  const shares = db.prepare('SELECT * FROM draw_shares').all();
+
+  const totalDeposits = contributions.reduce((s, c) => s + c.amount, 0);
+  const totalCosts = draws.reduce((s, d) => s + d.cost, 0);
+  const totalWins = draws.reduce((s, d) => s + d.win, 0);
+  const kupa = totalDeposits - totalCosts + totalWins;
+
+  const ledger = {};
+  members.forEach(m => { ledger[m.id] = 0; });
+  contributions.forEach(c => { ledger[c.member_id] = (ledger[c.member_id] || 0) + c.amount; });
+  shares.forEach(s => {
+    ledger[s.member_id] = (ledger[s.member_id] || 0) - s.cost_share + s.win_share;
+  });
+
+  return {
+    members, contributions, draws, draw_shares: shares,
+    totals: { deposits: totalDeposits, costs: totalCosts, wins: totalWins, kupa },
+    ledger
+  };
+}
+
+// ---------- auth ----------
+const sessions = new Map(); // token -> expiry timestamp
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
+
+function requireAdmin(req, res, next) {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  const expiry = token && sessions.get(token);
+  if (!expiry || expiry < Date.now()) {
+    return res.status(401).json({ error: 'לא מחובר כמנהל' });
+  }
+  next();
+}
+
+// ---------- app ----------
+const app = express();
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.post('/api/login', async (req, res) => {
+  const { password } = req.body || {};
+  if (!password || password !== ADMIN_PASSWORD) {
+    return res.status(401).json({ error: 'סיסמה שגויה' });
+  }
+  const token = crypto.randomBytes(24).toString('hex');
+  sessions.set(token, Date.now() + SESSION_TTL_MS);
+  logAction('login', {});
+  res.json({ token, expiresInMs: SESSION_TTL_MS });
+});
+
+app.get('/api/state', (req, res) => {
+  res.json(getState());
+});
+
+app.post('/api/members', requireAdmin, (req, res) => {
+  const name = (req.body?.name || '').trim();
+  if (!name) return res.status(400).json({ error: 'חסר שם' });
+  const id = uid();
+  db.prepare('INSERT INTO members (id, name, active, created_at) VALUES (?,?,1,?)')
+    .run(id, name, now());
+  logAction('add_member', { id, name });
+  res.json(getState());
+});
+
+// soft delete / retire / rename / reactivate
+app.patch('/api/members/:id', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const member = db.prepare('SELECT * FROM members WHERE id=?').get(id);
+  if (!member) return res.status(404).json({ error: 'לא נמצא' });
+  const { active, name } = req.body || {};
+  if (typeof active === 'boolean') {
+    db.prepare('UPDATE members SET active=? WHERE id=?').run(active ? 1 : 0, id);
+    logAction(active ? 'reactivate_member' : 'retire_member', { id, name: member.name });
+  }
+  if (typeof name === 'string' && name.trim()) {
+    db.prepare('UPDATE members SET name=? WHERE id=?').run(name.trim(), id);
+    logAction('rename_member', { id, oldName: member.name, newName: name.trim() });
+  }
+  res.json(getState());
+});
+
+app.post('/api/contributions', requireAdmin, (req, res) => {
+  const { memberId, amount, date } = req.body || {};
+  const member = db.prepare('SELECT * FROM members WHERE id=?').get(memberId);
+  if (!member) return res.status(400).json({ error: 'חבר לא קיים' });
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return res.status(400).json({ error: 'סכום לא תקין' });
+  const id = uid();
+  db.prepare('INSERT INTO contributions (id, member_id, amount, date) VALUES (?,?,?,?)')
+    .run(id, memberId, amt, date || now().slice(0, 10));
+  logAction('add_contribution', { id, memberId, amount: amt });
+  res.json(getState());
+});
+
+// draw cost/win are split equally among currently ACTIVE members,
+// locked in at draw time so later member changes don't rewrite history.
+app.post('/api/draws', requireAdmin, (req, res) => {
+  const { date, cost, win, note } = req.body || {};
+  const c = Number(cost) || 0;
+  const w = Number(win) || 0;
+  if (c <= 0) return res.status(400).json({ error: 'עלות לא תקינה' });
+
+  const activeMembers = db.prepare('SELECT id FROM members WHERE active=1').all().map(m => m.id);
+  if (activeMembers.length === 0) return res.status(400).json({ error: 'אין חברים פעילים' });
+
+  const drawId = uid();
+  db.prepare('INSERT INTO draws (id, date, cost, win, note) VALUES (?,?,?,?,?)')
+    .run(drawId, date || now().slice(0, 10), c, w, note || '');
+
+  const costShares = splitEqually(c, activeMembers);
+  const winShares = splitEqually(w, activeMembers);
+  const insertShare = db.prepare(
+    'INSERT INTO draw_shares (id, draw_id, member_id, cost_share, win_share) VALUES (?,?,?,?,?)'
+  );
+  activeMembers.forEach(memberId => {
+    insertShare.run(uid(), drawId, memberId, costShares[memberId] || 0, winShares[memberId] || 0);
+  });
+
+  logAction('add_draw', { drawId, cost: c, win: w, activeMembers });
+  res.json(getState());
+});
+
+app.get('/api/backup', requireAdmin, (req, res) => {
+  const state = getState();
+  const auditLog = db.prepare('SELECT * FROM audit_log ORDER BY ts').all();
+  res.setHeader('Content-Disposition', `attachment; filename=lotto-backup-${Date.now()}.json`);
+  res.json({ ...state, audit_log: auditLog, exportedAt: now() });
+});
+
+app.post('/api/reset', requireAdmin, (req, res) => {
+  if (req.body?.confirm !== 'RESET') {
+    return res.status(400).json({ error: 'נדרש אישור מפורש' });
+  }
+  // auto-backup to disk before wiping
+  const state = getState();
+  const auditLog = db.prepare('SELECT * FROM audit_log ORDER BY ts').all();
+  const backupPath = path.join(BACKUP_DIR, `auto-backup-${Date.now()}.json`);
+  fs.writeFileSync(backupPath, JSON.stringify({ ...state, audit_log: auditLog, exportedAt: now() }, null, 2));
+
+  db.exec('DELETE FROM draw_shares; DELETE FROM draws; DELETE FROM contributions; DELETE FROM members;');
+  logAction('reset', { backupPath });
+  res.json({ ok: true, backupPath, state: getState() });
+});
+
+app.listen(PORT, () => console.log(`kupat-lotto listening on :${PORT}`));
