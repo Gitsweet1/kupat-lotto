@@ -31,9 +31,3 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/kupat-lotto:latest
             ghcr.io/${{ github.repository_owner }}/kupat-lotto:${{ github.sha }}
-
-      # אופציונלי: אם מגדירים Webhook ב-Portainer לעדכון מיידי של ה-stack.
-      # יוצרים secret בשם PORTAINER_WEBHOOK_URL עם הכתובת מ-Portainer.
-      - name: Trigger Portainer redeploy
-        if: ${{ secrets.PORTAINER_WEBHOOK_URL != '' }}
-        run: curl -X POST "${{ secrets.PORTAINER_WEBHOOK_URL }}"
