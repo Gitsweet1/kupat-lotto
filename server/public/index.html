@@ -88,6 +88,10 @@
       <input id="depAmount" type="number" placeholder="סכום ₪" />
       <button onclick="addDeposit()">הפקד</button>
     </div>
+    <div class="row" style="margin-top:8px;">
+      <input id="bulkAmount" type="number" placeholder="סכום זהה לכולם ₪" />
+      <button class="secondary" onclick="addBulkDeposit()">הפקד לכל הפעילים</button>
+    </div>
   </div>
 
   <div class="card admin-only" style="display:none;">
@@ -117,7 +121,9 @@
 
   <div class="card admin-only" style="display:none;">
     <h2>⚠️ אזור מנהל</h2>
+    <div class="locked-note" style="margin-bottom:8px;">גיבוי DB = הקובץ המקורי, אפשר להעתיק חזרה ולהריץ ישירות. גיבוי JSON = לקריאה ובדיקה ידנית בלבד.</div>
     <div class="row">
+      <button class="secondary" onclick="downloadDbBackup()">💾 הורד גיבוי DB</button>
       <button class="secondary" onclick="downloadBackup()">📥 הורד גיבוי JSON</button>
       <button class="danger" onclick="openResetModal()">איפוס כללי</button>
     </div>
@@ -196,9 +202,14 @@ async function addMember(){
   await api('/members', {method:'POST', body: JSON.stringify({name})});
   input.value=''; await loadState(); toast('נוסף');
 }
-async function toggleRetire(id, active){
-  await api('/members/'+id, {method:'PATCH', body: JSON.stringify({active})});
-  await loadState(); toast(active ? 'הוחזר לפעיל' : 'סומן כפרש');
+async function toggleRetire(id, active, name){
+  let payout = false;
+  if (!active){
+    const bal = (state.ledger && state.ledger[id]) || 0;
+    payout = confirm(`${name} פורש. היתרה האישית שלו כרגע היא ₪${bal.toFixed(2)}.\n\nלאשר החזר של הסכום הזה (יקטין את הקופה בהתאם)?\nביטול = פרישה בלי החזר, הכסף נשאר בקופה.`);
+  }
+  await api('/members/'+id, {method:'PATCH', body: JSON.stringify({active, payout})});
+  await loadState(); toast(active ? 'הוחזר לפעיל' : (payout ? 'פרש, הוחזר לו הכסף' : 'סומן כפרש'));
 }
 async function addDeposit(){
   const memberId = document.getElementById('depMember').value;
@@ -206,6 +217,20 @@ async function addDeposit(){
   if (!memberId || !amount || amount<=0){ toast('בחר חבר וסכום תקין'); return; }
   await api('/contributions', {method:'POST', body: JSON.stringify({memberId, amount})});
   document.getElementById('depAmount').value=''; await loadState(); toast('ההפקדה נרשמה');
+}
+async function addBulkDeposit(){
+  const amount = Number(document.getElementById('bulkAmount').value);
+  if (!amount || amount<=0){ toast('הכנס סכום תקין'); return; }
+  await api('/contributions/bulk', {method:'POST', body: JSON.stringify({amount})});
+  document.getElementById('bulkAmount').value=''; await loadState(); toast('ההפקדה נרשמה לכולם');
+}
+async function downloadDbBackup(){
+  const res = await fetch('/api/backup/db', {headers:{'Authorization':'Bearer '+token}});
+  if (!res.ok){ toast('שגיאה בגיבוי'); return; }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href=url; a.download='lotto-backup.db'; a.click();
+  URL.revokeObjectURL(url);
 }
 async function addDraw(){
   const date = document.getElementById('drawDate').value || undefined;
@@ -236,15 +261,16 @@ async function doReset(){
 
 function render(){
   const t = state.totals || {};
-  document.getElementById('kupaAmount').textContent = '₪'+(t.kupa||0).toFixed(1);
+  document.getElementById('kupaAmount').textContent = '₪'+(t.kupa||0).toFixed(2);
   document.getElementById('kupaNote').textContent =
-    `הפקדות: ₪${(t.deposits||0).toFixed(0)} · עלויות טפסים: ₪${(t.costs||0).toFixed(0)} · זכיות: ₪${(t.wins||0).toFixed(0)}`;
+    `הפקדות: ₪${(t.deposits||0).toFixed(2)} · עלויות טפסים: ₪${(t.costs||0).toFixed(2)} · זכיות: ₪${(t.wins||0).toFixed(2)}`;
 
   const ml = document.getElementById('membersList');
   ml.innerHTML = state.members.length ? state.members.map(m=>{
     const retired = !m.active;
+    const safeName = m.name.replace(/'/g,"\\'");
     const actionBtn = token
-      ? `<a class="act" onclick="toggleRetire('${m.id}', ${retired})">${retired?'החזר':'פרש'}</a>`
+      ? `<a class="act" onclick="toggleRetire('${m.id}', ${retired}, '${safeName}')">${retired?'החזר':'פרש'}</a>`
       : '';
     return `<span class="member-chip ${retired?'retired':''}"><b>${m.name}</b>${actionBtn}</span>`;
   }).join('') : '<span class="empty">אין עדיין חברים</span>';
@@ -259,7 +285,7 @@ function render(){
   } else {
     const rows = [...state.draws].sort((a,b)=>b.date.localeCompare(a.date)).map(d=>{
       const won = d.win>0;
-      return `<tr><td>${d.date}</td><td>₪${d.cost.toFixed(0)}</td><td class="${won?'win':'lose'}">${won?'🏆 ₪'+d.win.toFixed(0):'לא זכינו'}</td><td>${d.note||''}</td></tr>`;
+      return `<tr><td>${d.date}</td><td>₪${d.cost.toFixed(2)}</td><td class="${won?'win':'lose'}">${won?'🏆 ₪'+d.win.toFixed(2):'לא זכינו'}</td><td>${d.note||''}</td></tr>`;
     }).join('');
     dw.innerHTML = `<table><tr><th>תאריך</th><th>עלות</th><th>תוצאה</th><th>הערה</th></tr>${rows}</table>`;
   }
@@ -270,7 +296,7 @@ function render(){
   } else {
     const rows = state.members.map(m=>{
       const bal = (state.ledger && state.ledger[m.id]) || 0;
-      return `<tr><td>${m.name}${m.active?'':' <span class="locked-note">(פרש)</span>'}</td><td><b>₪${bal.toFixed(1)}</b></td></tr>`;
+      return `<tr><td>${m.name}${m.active?'':' <span class="locked-note">(פרש)</span>'}</td><td><b>₪${bal.toFixed(2)}</b></td></tr>`;
     }).join('');
     lw.innerHTML = `<table><tr><th>שם</th><th>יתרה אישית</th></tr>${rows}</table>`;
   }

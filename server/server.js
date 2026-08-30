@@ -52,6 +52,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 `);
 
+// safe migration: add "kind" column to distinguish deposit / bulk / payout entries
+try { db.exec("ALTER TABLE contributions ADD COLUMN kind TEXT DEFAULT 'deposit'"); } catch (e) { /* already exists */ }
+
 // ---------- helpers ----------
 const uid = () => crypto.randomBytes(8).toString('hex');
 const now = () => new Date().toISOString();
@@ -87,14 +90,25 @@ function getState() {
   const totalDeposits = contributions.reduce((s, c) => s + c.amount, 0);
   const totalCosts = draws.reduce((s, d) => s + d.cost, 0);
   const totalWins = draws.reduce((s, d) => s + d.win, 0);
-  const kupa = totalDeposits - totalCosts + totalWins;
+
+  // ledger in agorot (integer cents) throughout, to avoid float drift entirely
+  const ledgerCents = {};
+  members.forEach(m => { ledgerCents[m.id] = 0; });
+  contributions.forEach(c => {
+    ledgerCents[c.member_id] = (ledgerCents[c.member_id] || 0) + Math.round(c.amount * 100);
+  });
+  shares.forEach(s => {
+    ledgerCents[s.member_id] = (ledgerCents[s.member_id] || 0)
+      - Math.round(s.cost_share * 100) + Math.round(s.win_share * 100);
+  });
 
   const ledger = {};
-  members.forEach(m => { ledger[m.id] = 0; });
-  contributions.forEach(c => { ledger[c.member_id] = (ledger[c.member_id] || 0) + c.amount; });
-  shares.forEach(s => {
-    ledger[s.member_id] = (ledger[s.member_id] || 0) - s.cost_share + s.win_share;
-  });
+  Object.keys(ledgerCents).forEach(id => { ledger[id] = ledgerCents[id] / 100; });
+
+  // kupa is ALWAYS the sum of individual ledgers - single source of truth,
+  // so the headline number can never drift from what members individually see.
+  const kupaCents = Object.values(ledgerCents).reduce((s, c) => s + c, 0);
+  const kupa = kupaCents / 100;
 
   return {
     members, contributions, draws, draw_shares: shares,
@@ -147,12 +161,26 @@ app.post('/api/members', requireAdmin, (req, res) => {
   res.json(getState());
 });
 
-// soft delete / retire / rename / reactivate
+// soft delete / retire / rename / reactivate.
+// retiring with payout=true pays the member their current ledger balance
+// (as a negative contribution) so the kupa total drops accordingly and
+// their own balance zeroes out - the money doesn't stay "orphaned".
 app.patch('/api/members/:id', requireAdmin, (req, res) => {
   const { id } = req.params;
   const member = db.prepare('SELECT * FROM members WHERE id=?').get(id);
   if (!member) return res.status(404).json({ error: 'לא נמצא' });
-  const { active, name } = req.body || {};
+  const { active, name, payout } = req.body || {};
+
+  if (active === false && payout) {
+    const balance = getState().ledger[id] || 0;
+    const cents = Math.round(balance * 100);
+    if (cents !== 0) {
+      db.prepare('INSERT INTO contributions (id, member_id, amount, date, kind) VALUES (?,?,?,?,?)')
+        .run(uid(), id, -(cents / 100), now().slice(0, 10), 'payout');
+      logAction('payout_member', { id, name: member.name, amount: cents / 100 });
+    }
+  }
+
   if (typeof active === 'boolean') {
     db.prepare('UPDATE members SET active=? WHERE id=?').run(active ? 1 : 0, id);
     logAction(active ? 'reactivate_member' : 'retire_member', { id, name: member.name });
@@ -174,6 +202,23 @@ app.post('/api/contributions', requireAdmin, (req, res) => {
   db.prepare('INSERT INTO contributions (id, member_id, amount, date) VALUES (?,?,?,?)')
     .run(id, memberId, amt, date || now().slice(0, 10));
   logAction('add_contribution', { id, memberId, amount: amt });
+  res.json(getState());
+});
+
+// deposits the same amount for every currently active member in one go
+app.post('/api/contributions/bulk', requireAdmin, (req, res) => {
+  const { amount, date } = req.body || {};
+  const amt = Number(amount);
+  if (!amt || amt <= 0) return res.status(400).json({ error: 'סכום לא תקין' });
+
+  const activeMembers = db.prepare('SELECT id FROM members WHERE active=1').all().map(m => m.id);
+  if (activeMembers.length === 0) return res.status(400).json({ error: 'אין חברים פעילים' });
+
+  const d = date || now().slice(0, 10);
+  const insert = db.prepare('INSERT INTO contributions (id, member_id, amount, date, kind) VALUES (?,?,?,?,?)');
+  activeMembers.forEach(memberId => insert.run(uid(), memberId, amt, d, 'bulk'));
+
+  logAction('add_bulk_contribution', { amount: amt, memberCount: activeMembers.length });
   res.json(getState());
 });
 
@@ -203,6 +248,12 @@ app.post('/api/draws', requireAdmin, (req, res) => {
 
   logAction('add_draw', { drawId, cost: c, win: w, activeMembers });
   res.json(getState());
+});
+
+// raw SQLite file - the real, restorable backup (JSON below is for reading/auditing)
+app.get('/api/backup/db', requireAdmin, (req, res) => {
+  db.pragma('wal_checkpoint(FULL)'); // flush WAL into the main file before copying
+  res.download(DB_PATH, `lotto-${Date.now()}.db`);
 });
 
 app.get('/api/backup', requireAdmin, (req, res) => {
