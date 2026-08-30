@@ -5,6 +5,8 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+const APP_VERSION = require('./package.json').version;
+
 const DATA_DIR = process.env.DATA_DIR || '/app/data';
 const DB_PATH = path.join(DATA_DIR, 'lotto.db');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
@@ -111,6 +113,7 @@ function getState() {
   const kupa = kupaCents / 100;
 
   return {
+    version: APP_VERSION,
     members, contributions, draws, draw_shares: shares,
     totals: { deposits: totalDeposits, costs: totalCosts, wins: totalWins, kupa },
     ledger
@@ -145,6 +148,10 @@ app.post('/api/login', async (req, res) => {
   sessions.set(token, Date.now() + SESSION_TTL_MS);
   logAction('login', {});
   res.json({ token, expiresInMs: SESSION_TTL_MS });
+});
+
+app.get('/api/version', (req, res) => {
+  res.json({ version: APP_VERSION });
 });
 
 app.get('/api/state', (req, res) => {
