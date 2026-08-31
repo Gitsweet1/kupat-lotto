@@ -11,6 +11,7 @@ const DATA_DIR = process.env.DATA_DIR || '/app/data';
 const DB_PATH = path.join(DATA_DIR, 'lotto.db');
 const BACKUP_DIR = path.join(DATA_DIR, 'backups');
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'change-me';
+const OPERATOR_PASSWORD = process.env.OPERATOR_PASSWORD || '';
 const PORT = process.env.PORT || 3000;
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -121,15 +122,32 @@ function getState() {
 }
 
 // ---------- auth ----------
-const sessions = new Map(); // token -> expiry timestamp
+// two roles: 'admin' (everything) and 'operator' (deposits + draws only,
+// can't touch members, reset, or backups). sessions store the role granted at login.
+const sessions = new Map(); // token -> { role, expiry }
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12h
 
-function requireAdmin(req, res, next) {
+function getSession(req) {
   const auth = req.headers.authorization || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-  const expiry = token && sessions.get(token);
-  if (!expiry || expiry < Date.now()) {
-    return res.status(401).json({ error: 'לא מחובר כמנהל' });
+  const session = token && sessions.get(token);
+  if (!session || session.expiry < Date.now()) return null;
+  return session;
+}
+
+function requireAdmin(req, res, next) {
+  const session = getSession(req);
+  if (!session || session.role !== 'admin') {
+    return res.status(401).json({ error: 'נדרשת התחברות כמנהל' });
+  }
+  next();
+}
+
+// admin OR operator - used for the day-to-day actions operators are allowed to do
+function requireOperator(req, res, next) {
+  const session = getSession(req);
+  if (!session || (session.role !== 'admin' && session.role !== 'operator')) {
+    return res.status(401).json({ error: 'נדרשת התחברות' });
   }
   next();
 }
@@ -141,13 +159,16 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 app.post('/api/login', async (req, res) => {
   const { password } = req.body || {};
-  if (!password || password !== ADMIN_PASSWORD) {
-    return res.status(401).json({ error: 'סיסמה שגויה' });
-  }
+  let role = null;
+  if (password && password === ADMIN_PASSWORD) role = 'admin';
+  else if (password && OPERATOR_PASSWORD && password === OPERATOR_PASSWORD) role = 'operator';
+
+  if (!role) return res.status(401).json({ error: 'סיסמה שגויה' });
+
   const token = crypto.randomBytes(24).toString('hex');
-  sessions.set(token, Date.now() + SESSION_TTL_MS);
-  logAction('login', {});
-  res.json({ token, expiresInMs: SESSION_TTL_MS });
+  sessions.set(token, { role, expiry: Date.now() + SESSION_TTL_MS });
+  logAction('login', { role });
+  res.json({ token, role, expiresInMs: SESSION_TTL_MS });
 });
 
 app.get('/api/version', (req, res) => {
@@ -199,7 +220,7 @@ app.patch('/api/members/:id', requireAdmin, (req, res) => {
   res.json(getState());
 });
 
-app.post('/api/contributions', requireAdmin, (req, res) => {
+app.post('/api/contributions', requireOperator, (req, res) => {
   const { memberId, amount, date } = req.body || {};
   const member = db.prepare('SELECT * FROM members WHERE id=?').get(memberId);
   if (!member) return res.status(400).json({ error: 'חבר לא קיים' });
@@ -213,7 +234,7 @@ app.post('/api/contributions', requireAdmin, (req, res) => {
 });
 
 // deposits the same amount for every currently active member in one go
-app.post('/api/contributions/bulk', requireAdmin, (req, res) => {
+app.post('/api/contributions/bulk', requireOperator, (req, res) => {
   const { amount, date } = req.body || {};
   const amt = Number(amount);
   if (!amt || amt <= 0) return res.status(400).json({ error: 'סכום לא תקין' });
@@ -231,7 +252,7 @@ app.post('/api/contributions/bulk', requireAdmin, (req, res) => {
 
 // draw cost/win are split equally among currently ACTIVE members,
 // locked in at draw time so later member changes don't rewrite history.
-app.post('/api/draws', requireAdmin, (req, res) => {
+app.post('/api/draws', requireOperator, (req, res) => {
   const { date, cost, win, note } = req.body || {};
   const c = Number(cost) || 0;
   const w = Number(win) || 0;

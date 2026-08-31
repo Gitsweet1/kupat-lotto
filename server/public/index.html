@@ -18,6 +18,7 @@
   .top-bar{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap;}
   .badge{font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);}
   .badge.admin{color:var(--gold-soft);border-color:var(--gold);}
+  .badge.operator{color:var(--green);border-color:var(--green);}
   .badge.viewer{color:var(--ink-dim);}
   .kupa{background:linear-gradient(135deg,var(--panel2),var(--panel));border:1px solid var(--line);border-radius:var(--radius);padding:22px;text-align:center;margin-bottom:20px;}
   .kupa-label{color:var(--ink-dim);font-size:13px;margin-bottom:6px;}
@@ -61,7 +62,7 @@
   <div class="top-bar">
     <div>
       <h1>🎟️ קופת לוטו משפחתית</h1>
-      <div class="sub">כולם רואים, רק מנהל משנה</div>
+      <div class="sub">כולם רואים · מפעיל מוסיף הפקדות/הגרלות · מנהל שולט בהכל</div>
     </div>
     <div id="authArea"></div>
   </div>
@@ -81,7 +82,7 @@
     </div>
   </div>
 
-  <div class="card admin-only" style="display:none;">
+  <div class="card op-only" style="display:none;">
     <h2>💰 הפקדה לקופה</h2>
     <div class="row">
       <select id="depMember"></select>
@@ -94,7 +95,7 @@
     </div>
   </div>
 
-  <div class="card admin-only" style="display:none;">
+  <div class="card op-only" style="display:none;">
     <h2>🎰 הגרלה חדשה</h2>
     <div class="locked-note" style="margin-bottom:8px;">העלות והזכיה מתחלקות שווה בשווה בין החברים הפעילים כרגע, ונשמרות כך גם אם ההרכב ישתנה בעתיד.</div>
     <div class="row">
@@ -151,6 +152,7 @@
 
 <script>
 let token = localStorage.getItem('lotto_admin_token') || null;
+let role = localStorage.getItem('lotto_role') || null;
 let state = { members: [], contributions: [], draws: [], draw_shares: [], totals:{}, ledger:{} };
 
 function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
@@ -161,7 +163,8 @@ async function api(path, opts={}){
   if (token){ opts.headers['Authorization']='Bearer '+token; }
   const res = await fetch('/api'+path, opts);
   if (res.status === 401){
-    localStorage.removeItem('lotto_admin_token'); token=null; renderAuth();
+    localStorage.removeItem('lotto_admin_token'); localStorage.removeItem('lotto_role');
+    token=null; role=null; renderAuth();
     toast('פג תוקף ההתחברות, התחבר שוב');
     throw new Error('unauthorized');
   }
@@ -181,23 +184,42 @@ async function loadState(){
 function renderAuth(){
   const area = document.getElementById('authArea');
   const adminOnly = document.querySelectorAll('.admin-only');
-  if (token){
-    area.innerHTML = `<span class="badge admin">👑 מחובר כמנהל</span> <button class="secondary" onclick="logout()">התנתק</button>`;
+  const opOnly = document.querySelectorAll('.op-only');
+
+  if (role === 'admin'){
+    area.innerHTML = `<span class="badge admin">👑 מנהל</span> <button class="secondary" onclick="logout()">התנתק</button>`;
     adminOnly.forEach(el=>el.style.display='');
-  } else {
-    area.innerHTML = `<span class="badge viewer">👁️ צפייה בלבד</span> <button class="secondary" onclick="openLogin()">כניסת מנהל</button>`;
+    opOnly.forEach(el=>el.style.display='');
+  } else if (role === 'operator'){
+    area.innerHTML = `<span class="badge operator">🛠️ מפעיל</span> <button class="secondary" onclick="logout()">התנתק</button>`;
     adminOnly.forEach(el=>el.style.display='none');
+    opOnly.forEach(el=>el.style.display='');
+  } else {
+    area.innerHTML = `<span class="badge viewer">👁️ צפייה בלבד</span> <button class="secondary" onclick="openLogin()">כניסה</button>`;
+    adminOnly.forEach(el=>el.style.display='none');
+    opOnly.forEach(el=>el.style.display='none');
   }
 }
 function openLogin(){
-  const pw = prompt('סיסמת מנהל:');
+  const pw = prompt('סיסמה (מנהל או מפעיל):');
   if (pw === null) return;
   fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})})
     .then(r=>r.ok?r.json():r.json().then(e=>Promise.reject(e)))
-    .then(d=>{ token=d.token; localStorage.setItem('lotto_admin_token', token); renderAuth(); toast('התחברת כמנהל'); })
+    .then(d=>{
+      token=d.token; role=d.role;
+      localStorage.setItem('lotto_admin_token', token);
+      localStorage.setItem('lotto_role', role);
+      renderAuth();
+      toast(role==='admin' ? 'התחברת כמנהל' : 'התחברת כמפעיל');
+      render();
+    })
     .catch(()=>toast('סיסמה שגויה'));
 }
-function logout(){ token=null; localStorage.removeItem('lotto_admin_token'); renderAuth(); }
+function logout(){
+  token=null; role=null;
+  localStorage.removeItem('lotto_admin_token'); localStorage.removeItem('lotto_role');
+  renderAuth(); render();
+}
 
 async function addMember(){
   const input = document.getElementById('newMemberName');
@@ -274,7 +296,7 @@ function render(){
   ml.innerHTML = state.members.length ? state.members.map(m=>{
     const retired = !m.active;
     const safeName = m.name.replace(/'/g,"\\'");
-    const actionBtn = token
+    const actionBtn = (role === 'admin')
       ? `<a class="act" onclick="toggleRetire('${m.id}', ${retired}, '${safeName}')">${retired?'החזר':'פרש'}</a>`
       : '';
     return `<span class="member-chip ${retired?'retired':''}"><b>${m.name}</b>${actionBtn}</span>`;
